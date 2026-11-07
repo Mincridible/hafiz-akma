@@ -113,15 +113,12 @@
   .pulse{animation:pulse 2.4s ease-in-out infinite}
   @keyframes pulse{0%,100%{box-shadow:0 10px 24px -10px rgba(74,52,36,.8),0 0 0 0 rgba(180,140,76,.55)}50%{box-shadow:0 10px 24px -10px rgba(74,52,36,.8),0 0 0 12px rgba(180,140,76,0)}}
 
-  /* video download progress */
-  .loader{width:78%;margin:1.1rem auto 0;transition:opacity .5s}
-  .loader.done{opacity:0}
-  .bar{height:3px;border-radius:3px;background:rgba(160,122,60,.2);overflow:hidden}
-  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--gold-light),var(--gold));transition:width .3s}
-  .bar.indeterminate i{width:35%;animation:slide 1.3s ease-in-out infinite}
-  @keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(290%)}}
-  .loader small{display:block;margin-top:.45rem;font-size:.85rem;color:var(--ink-soft);letter-spacing:.06em}
-  #noVideo{display:none;margin-top:.5rem;background:none;border:0;font:inherit;font-size:.9rem;color:var(--gold);text-decoration:underline;cursor:pointer}
+  /* spinner shown while the video is buffering */
+  .spinner{position:absolute;top:50%;left:50%;width:42px;height:42px;margin:-21px 0 0 -21px;
+    border:2px solid rgba(216,189,134,.25);border-top-color:var(--gold-light);border-radius:50%;
+    animation:spin .9s linear infinite;opacity:0;transition:opacity .3s;pointer-events:none}
+  #player.buffering .spinner{opacity:1}
+  @keyframes spin{to{transform:rotate(360deg)}}
 
   /* ---------- Video ---------- */
   #player{
@@ -173,7 +170,7 @@
 
   @media (prefers-reduced-motion:reduce){
     .reveal{opacity:1;transform:none;transition:none}
-    .pulse,.bar.indeterminate i{animation:none}
+    .pulse{animation:none}
     html{scroll-behavior:auto}
   }
 </style>
@@ -241,21 +238,17 @@
     <p class="caps">Jemputan Majlis<br>Perkahwinan</p>
     <h1 class="names script">Muhammad<br>Amirul Hafiz <span class="amp">&amp;</span> Nur Akma Fatihah</h1>
     <p class="date">26 · 12 · 2026</p>
-    <button id="openBtn" class="btn" type="button" disabled>
+    <button id="openBtn" class="btn pulse" type="button">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-      <span id="openLabel">Buka Kad</span>
+      Buka Kad
     </button>
-    <div class="loader" id="loader">
-      <div class="bar indeterminate" id="bar"><i></i></div>
-      <small id="loadText">Memuatkan video…</small>
-      <button id="noVideo" type="button">Buka kad tanpa video</button>
-    </div>
   </div>
 </div>
 
 <!-- ============ VIDEO ============ -->
 <div id="player" aria-hidden="true">
-  <video id="video" playsinline preload="auto"></video>
+  <video id="video" src="video/wedding.mp4" playsinline preload="auto"></video>
+  <div class="spinner"></div>
   <button id="skip" class="btn ghost" type="button">Langkau ›</button>
 </div>
 
@@ -340,7 +333,6 @@
    (Names and wording are edited directly in the HTML above.)
    ===================================================================== */
 const CONFIG = {
-  video: "video/wedding.mp4",
   lat: 2.232578,                 // Rumah Radhi & Salwana, Kundang Ulu
   lng: 102.753583,
   mapsLink: "https://maps.app.goo.gl/ewW7kL3sywse68DVA",
@@ -385,57 +377,18 @@ const player   = document.getElementById("player");
 const video    = document.getElementById("video");
 const replay   = document.getElementById("replay");
 const openBtn  = document.getElementById("openBtn");
-const loader   = document.getElementById("loader");
-const bar      = document.getElementById("bar");
-const loadText = document.getElementById("loadText");
-const noVideo  = document.getElementById("noVideo");
-let videoOK = false;
+let videoOK = true;
 
-/* ---------- Load the whole video first, so it plays without buffering ----------
-   The file is downloaded completely (with a % shown) before "Buka Kad" unlocks.
-   Phones (especially iPhone) ignore normal video preloading, so we fetch it
-   ourselves and hand the finished file to the player. */
-function ready(ok){
-  videoOK = ok;
-  openBtn.disabled = false;
-  openBtn.classList.add("pulse");
-  loader.classList.add("done");
-  noVideo.style.display = "none";
-}
-function fallback(){            // fetch not possible: let the browser stream it instead
-  video.src = CONFIG.video;
-  video.addEventListener("canplaythrough", () => ready(true), { once:true });
-  video.addEventListener("error", () => ready(false), { once:true });
-  video.load();
-}
-async function preload(){
-  try{
-    const res = await fetch(CONFIG.video);
-    if (!res.ok) throw new Error(res.status);
-    const total = +res.headers.get("Content-Length") || 0;
-    if (total) bar.classList.remove("indeterminate");
-    const reader = res.body.getReader();
-    const chunks = []; let got = 0;
-    for(;;){
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value); got += value.length;
-      if (total){
-        const pct = Math.min(100, Math.round(got / total * 100));
-        bar.firstElementChild.style.width = pct + "%";
-        loadText.textContent = `Memuatkan video… ${pct}%`;
-      }
-    }
-    video.src = URL.createObjectURL(new Blob(chunks, { type: "video/mp4" }));
-    ready(true);
-  }catch(e){
-    if (location.protocol === "file:") fallback();   // opened straight from disk
-    else ready(false);                                // no video: card opens directly
-  }
-}
-preload();
-// On a very slow connection, offer a way in without waiting.
-setTimeout(() => { if (openBtn.disabled) noVideo.style.display = "inline-block"; }, 12000);
+/* ---------- Video streams: it starts playing as soon as the first seconds arrive ----------
+   The browser starts buffering in the background while the cover is showing
+   (iPhone waits for the tap). A spinner shows only if it has to wait. */
+const buffering = on => player.classList.toggle("buffering", on);
+video.addEventListener("waiting", () => buffering(true));
+video.addEventListener("playing", () => buffering(false));
+video.addEventListener("error", () => {           // missing/broken video: just open the card
+  videoOK = false;
+  if (player.classList.contains("show")) showContent();
+});
 
 /* ---------- Open card → play video → reveal content ---------- */
 function showContent(){
@@ -449,13 +402,13 @@ function playVideo(){
   if (!videoOK) return showContent();
   player.classList.add("show");
   replay.classList.remove("show");
+  buffering(video.readyState < 3);
   video.currentTime = 0;
   // The tap on the button counts as a user gesture, so sound is allowed.
   video.play().catch(showContent);
 }
 
 openBtn.addEventListener("click", playVideo);
-noVideo.addEventListener("click", showContent);
 document.getElementById("skip").addEventListener("click", showContent);
 replay.addEventListener("click", playVideo);
 video.addEventListener("ended", showContent);
